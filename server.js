@@ -87,10 +87,10 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'POST' && pathname === '/api/capsules') {
     try {
       const body = await readBody(req);
-      const { message, unlockAt, photo } = body;
+      const { lockMessage, unlockMessage, unlockAt, photo } = body;
 
-      if (!message || !unlockAt) {
-        return sendJSON(res, 400, { error: 'message and unlockAt (ISO date string) are required' });
+      if ((!unlockMessage && !photo) || !unlockAt) {
+        return sendJSON(res, 400, { error: 'unlockMessage (or a photo) and unlockAt (ISO date string) are required' });
       }
       const unlockTimestamp = new Date(unlockAt).getTime();
       if (isNaN(unlockTimestamp)) {
@@ -100,8 +100,9 @@ const server = http.createServer(async (req, res) => {
       const db = loadDB();
       const id = generateCapsuleId();
       db[id] = {
-        message,
-        photo: photo || null, // base64 data URL, optional
+        lockMessage: lockMessage || null, // shown BEFORE unlock, e.g. "Don't open until Christmas!"
+        unlockMessage: unlockMessage || null, // shown AFTER unlock
+        photo: photo || null, // base64 data URL, optional, shown AFTER unlock
         unlockAt: unlockTimestamp,
         createdAt: Date.now(),
         viewCount: 0, // simple counter: how many times this capsule has been checked
@@ -135,18 +136,19 @@ const server = http.createServer(async (req, res) => {
     const isUnlocked = now >= capsule.unlockAt;
 
     if (!isUnlocked) {
-      // Locked: content is NEVER included in this response. Only metadata needed for a countdown.
+      // Locked: only the teaser and countdown metadata go out. The real content is never included here.
       return sendJSON(res, 200, {
         locked: true,
+        lockMessage: capsule.lockMessage || null,
         unlockAt: capsule.unlockAt,
         secondsRemaining: Math.max(0, Math.floor((capsule.unlockAt - now) / 1000)),
         viewCount: capsule.viewCount,
       });
     } else {
-      // Unlocked: now, and only now, does the content get sent.
+      // Unlocked: now, and only now, does the real content get sent.
       return sendJSON(res, 200, {
         locked: false,
-        message: capsule.message,
+        unlockMessage: capsule.unlockMessage,
         photo: capsule.photo || null,
         unlockAt: capsule.unlockAt,
         viewCount: capsule.viewCount,
