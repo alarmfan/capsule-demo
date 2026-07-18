@@ -19,10 +19,13 @@
   <h1>🎄 Create a Test Capsule</h1>
   <p class="hint">This simulates a creator uploading content and setting an unlock date — no NFC tag involved yet, just the URL and the server-side lock.</p>
 
-  <label for="message">Content (stand-in for photos/video/message)</label>
-  <textarea id="message" rows="4" placeholder="Merry Christmas! Here's our family video..."></textarea>
+  <label for="lockMessage">Lock Screen Message (optional teaser, shown before unlock)</label>
+  <textarea id="lockMessage" rows="2" placeholder="Don't open until Christmas morning!"></textarea>
 
-  <label for="photo">Photo (optional)</label>
+  <label for="unlockMessage">Unlocked Capsule Message (the real content, revealed after unlock)</label>
+  <textarea id="unlockMessage" rows="4" placeholder="Merry Christmas! Here's our family video..."></textarea>
+
+  <label for="photo">Photo (optional, also revealed after unlock)</label>
   <input type="file" id="photo" accept="image/*">
   <p class="hint">Attach a photo to see it appear after unlock, alongside or instead of text.</p>
 
@@ -36,12 +39,13 @@
 
 <script>
 async function createCapsule() {
-  const message = document.getElementById('message').value.trim();
+  const lockMessage = document.getElementById('lockMessage').value.trim();
+  const unlockMessage = document.getElementById('unlockMessage').value.trim();
   const unlockAtLocal = document.getElementById('unlockAt').value;
   const photoFile = document.getElementById('photo').files[0];
 
-  if (!message || !unlockAtLocal) {
-    alert('Please fill in both the content and unlock date fields.');
+  if ((!unlockMessage && !photoFile) || !unlockAtLocal) {
+    alert('Please provide an unlock message or a photo, and an unlock date.');
     return;
   }
 
@@ -60,7 +64,7 @@ async function createCapsule() {
   const res = await fetch('/api/capsules', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ message, unlockAt, photo })
+    body: JSON.stringify({ lockMessage, unlockMessage, unlockAt, photo })
   });
   const data = await res.json();
 
