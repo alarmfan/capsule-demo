@@ -7,7 +7,7 @@
   body { font-family: -apple-system, Arial, sans-serif; max-width: 520px; margin: 60px auto; padding: 0 20px; text-align: center; color: #1a1a1a; }
   #countdown { font-size: 40px; font-weight: 700; margin: 30px 0 10px; letter-spacing: 1px; }
   #status { font-size: 15px; color: #666; }
-  #content { display: none; margin-top: 30px; padding: 24px; background: #f4f4f4; border-radius: 10px; font-size: 18px; line-height: 1.5; text-align: left; white-space: pre-wrap; }
+  #content { margin-top: 30px; padding: 24px; background: #f4f4f4; border-radius: 10px; font-size: 18px; line-height: 1.5; text-align: left; white-space: pre-wrap; }
   #photo { max-width: 100%; border-radius: 10px; margin-top: 20px; display: none; }
   .meta { margin-top: 40px; font-size: 12px; color: #999; }
   .lock-icon { font-size: 46px; }
@@ -16,7 +16,8 @@
 <body>
   <div id="locked-view">
     <div class="lock-icon">🔒</div>
-    <h1>Don't Open Until It's Time</h1>
+    <h1>Locked</h1>
+    <div id="teaser" style="font-size:16px; color:#555; margin-bottom:10px;"></div>
     <div id="countdown">--:--:--:--</div>
     <div id="status">Checking with the server...</div>
   </div>
@@ -56,15 +57,16 @@ async function checkCapsule() {
   document.getElementById('viewcount').textContent = `Checked ${data.viewCount} time(s) — every check hits the server, never the visitor's own clock.`;
 
   if (data.locked) {
+    document.getElementById('teaser').textContent = data.lockMessage || '';
     document.getElementById('countdown').textContent = formatCountdown(data.secondsRemaining);
     document.getElementById('status').textContent =
       data.secondsRemaining > 0
-        ? "Locked. The server refuses to send the content — it isn't just hidden, it was never sent."
+        ? "The server refuses to send the content — it isn't just hidden, it was never sent."
         : "Unlocking...";
   } else {
     document.getElementById('locked-view').style.display = 'none';
     document.getElementById('unlocked-view').style.display = 'block';
-    document.getElementById('content').textContent = data.message;
+    document.getElementById('content').textContent = data.unlockMessage || '';
     if (data.photo) {
       const img = document.getElementById('photo');
       img.src = data.photo;
