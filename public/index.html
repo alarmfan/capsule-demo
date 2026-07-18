@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Create a Test Capsule</title>
+<style>
+  body { font-family: -apple-system, Arial, sans-serif; max-width: 520px; margin: 60px auto; padding: 0 20px; color: #1a1a1a; }
+  h1 { font-size: 22px; }
+  label { display: block; margin-top: 16px; font-weight: 600; font-size: 14px; }
+  input, textarea { width: 100%; padding: 8px; margin-top: 6px; font-size: 14px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 6px; }
+  button { margin-top: 20px; padding: 10px 18px; font-size: 14px; background: #1a1a1a; color: white; border: none; border-radius: 6px; cursor: pointer; }
+  button:hover { background: #333; }
+  #result { margin-top: 24px; padding: 14px; background: #f4f4f4; border-radius: 8px; font-size: 14px; display: none; }
+  #result a { color: #0056b3; word-break: break-all; }
+  .hint { color: #666; font-size: 13px; margin-top: 4px; }
+</style>
+</head>
+<body>
+  <h1>🎄 Create a Test Capsule</h1>
+  <p class="hint">This simulates a creator uploading content and setting an unlock date — no NFC tag involved yet, just the URL and the server-side lock.</p>
+
+  <label for="message">Content (stand-in for photos/video/message)</label>
+  <textarea id="message" rows="4" placeholder="Merry Christmas! Here's our family video..."></textarea>
+
+  <label for="photo">Photo (optional)</label>
+  <input type="file" id="photo" accept="image/*">
+  <p class="hint">Attach a photo to see it appear after unlock, alongside or instead of text.</p>
+
+  <label for="unlockAt">Unlock date &amp; time</label>
+  <input type="datetime-local" id="unlockAt">
+  <p class="hint">Tip: set this a minute or two in the future so you can watch it flip from locked to unlocked.</p>
+
+  <button onclick="createCapsule()">Create Capsule</button>
+
+  <div id="result"></div>
+
+<script>
+async function createCapsule() {
+  const message = document.getElementById('message').value.trim();
+  const unlockAtLocal = document.getElementById('unlockAt').value;
+  const photoFile = document.getElementById('photo').files[0];
+
+  if (!message || !unlockAtLocal) {
+    alert('Please fill in both the content and unlock date fields.');
+    return;
+  }
+
+  const unlockAt = new Date(unlockAtLocal).toISOString();
+
+  let photo = null;
+  if (photoFile) {
+    photo = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result); // data:image/...;base64,...
+      reader.onerror = reject;
+      reader.readAsDataURL(photoFile);
+    });
+  }
+
+  const res = await fetch('/api/capsules', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message, unlockAt, photo })
+  });
+  const data = await res.json();
+
+  const resultDiv = document.getElementById('result');
+  if (data.error) {
+    resultDiv.style.display = 'block';
+    resultDiv.innerHTML = `<strong>Error:</strong> ${data.error}`;
+    return;
+  }
+
+  const fullUrl = window.location.origin + data.viewUrl;
+  resultDiv.style.display = 'block';
+  resultDiv.innerHTML = `
+    <strong>Capsule created.</strong><br>
+    This link is the stand-in for the NFC tap destination:<br>
+    <a href="${data.viewUrl}" target="_blank">${fullUrl}</a><br><br>
+    Notice the ID is long and random — not <code>/capsule/1</code>, <code>/capsule/2</code> — so it can't be guessed.
+  `;
+}
+</script>
+</body>
+</html>
