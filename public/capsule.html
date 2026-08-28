@@ -50,10 +50,14 @@ function formatCountdown(totalSeconds) {
   return `${d}d ${h}h ${m}m ${s}s`;
 }
 
+let pollInterval = null;
+let hasRenderedUnlocked = false;
+
 async function checkCapsule() {
   const res = await fetch(`/api/capsules/${capsuleId}`);
   if (!res.ok) {
     document.getElementById('status').textContent = 'Capsule not found.';
+    if (pollInterval) clearInterval(pollInterval);
     return;
   }
   const data = await res.json();
@@ -67,6 +71,16 @@ async function checkCapsule() {
         ? "The server refuses to send the content — it isn't just hidden, it was never sent."
         : "Unlocking...";
   } else {
+    // Stop polling now that it's unlocked - nothing else is going to change,
+    // and re-polling would tear down and restart any playing video/audio every second.
+    if (pollInterval) {
+      clearInterval(pollInterval);
+      pollInterval = null;
+    }
+
+    if (hasRenderedUnlocked) return; // already built the unlocked view once, don't rebuild it
+    hasRenderedUnlocked = true;
+
     document.getElementById('locked-view').style.display = 'none';
     document.getElementById('unlocked-view').style.display = 'block';
     document.getElementById('content').textContent = data.unlockMessage || '';
@@ -98,7 +112,7 @@ async function checkCapsule() {
 }
 
 checkCapsule();
-setInterval(checkCapsule, 1000); // poll the server every second, same as a real client would
+pollInterval = setInterval(checkCapsule, 1000); // only matters while still locked; stopped automatically on unlock
 </script>
 </body>
 </html>
