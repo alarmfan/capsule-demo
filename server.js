@@ -256,16 +256,41 @@ const server = http.createServer(async (req, res) => {
     }
 
     const filePath = path.join(UPLOADS_DIR, capsule.attachment.storedFileName);
-    fs.readFile(filePath, (err, data) => {
-      if (err) {
+    fs.stat(filePath, (statErr, stats) => {
+      if (statErr) {
         res.writeHead(404);
         return res.end('Not found');
       }
-      res.writeHead(200, {
-        'Content-Type': capsule.attachment.mimeType || 'application/octet-stream',
-        'Content-Disposition': `inline; filename="${capsule.attachment.originalFileName}"`,
-      });
-      res.end(data);
+
+      const mimeType = capsule.attachment.mimeType || 'application/octet-stream';
+      const disposition = `inline; filename="${capsule.attachment.originalFileName}"`;
+      const range = req.headers.range;
+
+      if (range) {
+        // Mobile Safari requires range request support to play video/audio at all,
+        // not just for scrubbing - without this, playback silently fails.
+        const parts = range.replace(/bytes=/, '').split('-');
+        const start = parseInt(parts[0], 10);
+        const end = parts[1] ? parseInt(parts[1], 10) : stats.size - 1;
+        const chunkSize = end - start + 1;
+
+        res.writeHead(206, {
+          'Content-Range': `bytes ${start}-${end}/${stats.size}`,
+          'Accept-Ranges': 'bytes',
+          'Content-Length': chunkSize,
+          'Content-Type': mimeType,
+          'Content-Disposition': disposition,
+        });
+        fs.createReadStream(filePath, { start, end }).pipe(res);
+      } else {
+        res.writeHead(200, {
+          'Content-Length': stats.size,
+          'Accept-Ranges': 'bytes',
+          'Content-Type': mimeType,
+          'Content-Disposition': disposition,
+        });
+        fs.createReadStream(filePath).pipe(res);
+      }
     });
     return;
   }
