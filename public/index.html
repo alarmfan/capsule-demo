@@ -26,9 +26,9 @@
   <label for="unlockMessage">Unlocked Capsule Message (the real content, revealed after unlock)</label>
   <textarea id="unlockMessage" rows="4" placeholder="Merry Christmas! Here's our family video..."></textarea>
 
-  <label for="attachment">Attachment (photo, video, or document — optional, revealed after unlock)</label>
-  <input type="file" id="attachment" accept="image/*,video/*,.pdf,.doc,.docx,.txt">
-  <p class="hint">Photos and videos preview inline after unlock; documents show as a download link. Keep test files under 25MB.</p>
+  <label for="attachments">Attachments (photos, videos, or documents — optional, revealed after unlock)</label>
+  <input type="file" id="attachments" accept="image/*,video/*,.pdf,.doc,.docx,.txt" multiple>
+  <p class="hint">Select multiple files at once (Ctrl/Cmd-click, or long-press to multi-select on mobile). Photos and videos preview inline after unlock; documents show as download links. Keep each file under 25MB, and combined uploads under 100MB.</p>
 
   <label for="unlockAt">Unlock date &amp; time</label>
   <input type="datetime-local" id="unlockAt">
@@ -43,30 +43,28 @@ async function createCapsule() {
   const lockMessage = document.getElementById('lockMessage').value.trim();
   const unlockMessage = document.getElementById('unlockMessage').value.trim();
   const unlockAtLocal = document.getElementById('unlockAt').value;
-  const file = document.getElementById('attachment').files[0];
+  const files = Array.from(document.getElementById('attachments').files);
 
-  if ((!unlockMessage && !file) || !unlockAtLocal) {
-    alert('Please provide an unlock message or an attachment, and an unlock date.');
+  if ((!unlockMessage && files.length === 0) || !unlockAtLocal) {
+    alert('Please provide an unlock message or at least one attachment, and an unlock date.');
     return;
   }
 
   const unlockAt = new Date(unlockAtLocal).toISOString();
 
-  let attachment = null;
-  if (file) {
-    const dataUrl = await new Promise((resolve, reject) => {
+  const attachments = await Promise.all(files.map((file) => {
+    return new Promise((resolve, reject) => {
       const reader = new FileReader();
-      reader.onload = () => resolve(reader.result); // data:<mime>;base64,<data>
+      reader.onload = () => resolve({ dataUrl: reader.result, fileName: file.name });
       reader.onerror = reject;
       reader.readAsDataURL(file);
     });
-    attachment = { dataUrl, fileName: file.name };
-  }
+  }));
 
   const res = await fetch('/api/capsules', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ lockMessage, unlockMessage, unlockAt, attachment })
+    body: JSON.stringify({ lockMessage, unlockMessage, unlockAt, attachments })
   });
   const data = await res.json();
 
