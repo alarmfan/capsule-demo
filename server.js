@@ -25,7 +25,9 @@ const PORT = process.env.PORT || 3000;
 const DB_FILE = path.join(__dirname, 'capsules.json');
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const UPLOADS_DIR = path.join(__dirname, 'uploads');
-const MAX_UPLOAD_BYTES = 25 * 1024 * 1024; // 25MB - a demo-safe ceiling, not a production limit
+const MAX_UPLOAD_BYTES = 25 * 1024 * 1024; // 25MB per attachment - a demo-safe ceiling, not a production limit
+const MAX_ATTACHMENTS = 6; // per capsule, for demo sanity
+const MAX_TOTAL_REQUEST_BYTES = 100 * 1024 * 1024; // overall request ceiling, since several attachments can add up
 
 if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR);
 
@@ -67,7 +69,7 @@ function readBody(req) {
     let chunks = [];
     let size = 0;
     let tooLarge = false;
-    const LIMIT = MAX_UPLOAD_BYTES * 1.4; // headroom for base64 overhead + JSON wrapper
+    const LIMIT = MAX_TOTAL_REQUEST_BYTES * 1.4; // headroom for base64 overhead + JSON wrapper
 
     req.on('data', (chunk) => {
       size += chunk.length;
@@ -153,17 +155,22 @@ async function handleRequest(req, res) {
       body = await readBody(req);
     } catch (e) {
       if (e.message === 'PAYLOAD_TOO_LARGE') {
-        return sendJSON(res, 413, { error: `Attachment too large. Keep test uploads under ${MAX_UPLOAD_BYTES / (1024 * 1024)}MB.` });
+        return sendJSON(res, 413, { error: `Attachments too large in total. Keep combined uploads under ${MAX_TOTAL_REQUEST_BYTES / (1024 * 1024)}MB.` });
       }
       return sendJSON(res, 400, { error: 'Invalid request body' });
     }
 
     try {
-      const { lockMessage, unlockMessage, unlockAt, attachment } = body;
-      // attachment (optional) = { dataUrl: "data:<mime>;base64,<data>", fileName: "video.mp4" }
+      const { lockMessage, unlockMessage, unlockAt, attachments } = body;
+      // attachments (optional) = [{ dataUrl: "data:<mime>;base64,<data>", fileName: "video.mp4" }, ...]
 
-      if ((!unlockMessage && !attachment) || !unlockAt) {
-        return sendJSON(res, 400, { error: 'unlockMessage (or an attachment) and unlockAt (ISO date string) are required' });
+      const attachmentList = Array.isArray(attachments) ? attachments : [];
+
+      if ((!unlockMessage && attachmentList.length === 0) || !unlockAt) {
+        return sendJSON(res, 400, { error: 'unlockMessage (or at least one attachment) and unlockAt (ISO date string) are required' });
+      }
+      if (attachmentList.length > MAX_ATTACHMENTS) {
+        return sendJSON(res, 400, { error: `Too many attachments. Keep it to ${MAX_ATTACHMENTS} or fewer per capsule.` });
       }
       const unlockTimestamp = new Date(unlockAt).getTime();
       if (isNaN(unlockTimestamp)) {
@@ -173,36 +180,39 @@ async function handleRequest(req, res) {
       const db = loadDB();
       const id = generateCapsuleId();
 
-      let attachmentInfo = null;
-      if (attachment && attachment.dataUrl) {
-        const match = attachment.dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+      const savedAttachments = [];
+      for (let i = 0; i < attachmentList.length; i++) {
+        const item = attachmentList[i];
+        if (!item || !item.dataUrl) continue;
+
+        const match = item.dataUrl.match(/^data:([^;]+);base64,(.+)$/);
         if (!match) {
-          return sendJSON(res, 400, { error: 'Attachment was not a valid file upload' });
+          return sendJSON(res, 400, { error: `Attachment ${i + 1} was not a valid file upload` });
         }
         const mimeType = match[1];
         const base64Data = match[2];
         const buffer = Buffer.from(base64Data, 'base64');
 
         if (buffer.length > MAX_UPLOAD_BYTES) {
-          return sendJSON(res, 413, { error: `Attachment too large. Keep test uploads under ${MAX_UPLOAD_BYTES / (1024 * 1024)}MB.` });
+          return sendJSON(res, 413, { error: `Attachment ${i + 1} is too large. Keep each file under ${MAX_UPLOAD_BYTES / (1024 * 1024)}MB.` });
         }
 
-        const ext = extensionFromFileName(attachment.fileName);
-        const storedFileName = `${id}${ext}`;
+        const ext = extensionFromFileName(item.fileName);
+        const storedFileName = `${id}-${i}${ext}`; // -i keeps filenames unique within a capsule
         fs.writeFileSync(path.join(UPLOADS_DIR, storedFileName), buffer);
 
-        attachmentInfo = {
+        savedAttachments.push({
           storedFileName,
-          originalFileName: attachment.fileName || storedFileName,
+          originalFileName: item.fileName || storedFileName,
           mimeType,
           category: classifyMimeType(mimeType), // 'image' | 'video' | 'document'
-        };
+        });
       }
 
       db[id] = {
         lockMessage: lockMessage || null, // shown BEFORE unlock, e.g. "Don't open until Christmas!"
         unlockMessage: unlockMessage || null, // shown AFTER unlock
-        attachment: attachmentInfo, // metadata only - actual file lives in /uploads
+        attachments: savedAttachments, // metadata only - actual files live in /uploads
         unlockAt: unlockTimestamp,
         createdAt: Date.now(),
         viewCount: 0,
@@ -247,28 +257,28 @@ async function handleRequest(req, res) {
       return sendJSON(res, 200, {
         locked: false,
         unlockMessage: capsule.unlockMessage,
-        attachment: capsule.attachment
-          ? {
-              category: capsule.attachment.category,
-              originalFileName: capsule.attachment.originalFileName,
-              mimeType: capsule.attachment.mimeType,
-              fileUrl: `/api/capsules/${id}/file`,
-            }
-          : null,
+        attachments: (capsule.attachments || []).map((att, i) => ({
+          category: att.category,
+          originalFileName: att.originalFileName,
+          mimeType: att.mimeType,
+          fileUrl: `/api/capsules/${id}/file/${i}`,
+        })),
         unlockAt: capsule.unlockAt,
         viewCount: capsule.viewCount,
       });
     }
   }
 
-  // GET /api/capsules/:id/file -> serves the actual attachment, gated exactly like the content itself
-  const fileMatch = pathname.match(/^\/api\/capsules\/([a-f0-9]+)\/file$/);
+  // GET /api/capsules/:id/file/:index -> serves one attachment, gated exactly like the content itself
+  const fileMatch = pathname.match(/^\/api\/capsules\/([a-f0-9]+)\/file\/(\d+)$/);
   if (req.method === 'GET' && fileMatch) {
     const id = fileMatch[1];
+    const index = parseInt(fileMatch[2], 10);
     const db = loadDB();
     const capsule = db[id];
+    const attachment = capsule && capsule.attachments && capsule.attachments[index];
 
-    if (!capsule || !capsule.attachment) {
+    if (!attachment) {
       res.writeHead(404);
       return res.end('Not found');
     }
@@ -280,15 +290,15 @@ async function handleRequest(req, res) {
       return res.end(JSON.stringify({ error: 'Locked' }));
     }
 
-    const filePath = path.join(UPLOADS_DIR, capsule.attachment.storedFileName);
+    const filePath = path.join(UPLOADS_DIR, attachment.storedFileName);
     fs.stat(filePath, (statErr, stats) => {
       if (statErr) {
         res.writeHead(404);
         return res.end('Not found');
       }
 
-      const mimeType = capsule.attachment.mimeType || 'application/octet-stream';
-      const disposition = `inline; filename="${capsule.attachment.originalFileName}"`;
+      const mimeType = attachment.mimeType || 'application/octet-stream';
+      const disposition = `inline; filename="${attachment.originalFileName}"`;
       const range = req.headers.range;
 
       if (range) {
