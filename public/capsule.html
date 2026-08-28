@@ -9,7 +9,9 @@
   #countdown { font-size: 40px; font-weight: 700; margin: 30px 0 10px; letter-spacing: 1px; }
   #status { font-size: 15px; color: #666; }
   #content { margin-top: 30px; padding: 24px; background: #f4f4f4; border-radius: 10px; font-size: 18px; line-height: 1.5; text-align: left; white-space: pre-wrap; }
-  #photo { max-width: 100%; border-radius: 10px; margin-top: 20px; display: none; }
+  #attachment-area { margin-top: 20px; }
+  #attachment-area img, #attachment-area video { max-width: 100%; border-radius: 10px; }
+  #attachment-area a.doc-link { display: inline-block; padding: 12px 20px; background: #1a1a1a; color: white; border-radius: 8px; text-decoration: none; font-size: 15px; }
   .meta { margin-top: 40px; font-size: 12px; color: #999; }
   .lock-icon { font-size: 46px; }
 </style>
@@ -27,7 +29,7 @@
     <div class="lock-icon">🎁</div>
     <h1>Unlocked!</h1>
     <div id="content"></div>
-    <img id="photo" alt="Capsule photo">
+    <div id="attachment-area"></div>
   </div>
 
   <div class="meta" id="viewcount"></div>
@@ -68,10 +70,29 @@ async function checkCapsule() {
     document.getElementById('locked-view').style.display = 'none';
     document.getElementById('unlocked-view').style.display = 'block';
     document.getElementById('content').textContent = data.unlockMessage || '';
-    if (data.photo) {
-      const img = document.getElementById('photo');
-      img.src = data.photo;
-      img.style.display = 'block';
+
+    const area = document.getElementById('attachment-area');
+    area.innerHTML = '';
+    if (data.attachment) {
+      const { category, fileUrl, originalFileName, mimeType } = data.attachment;
+      if (category === 'image') {
+        const img = document.createElement('img');
+        img.src = fileUrl;
+        img.alt = originalFileName;
+        area.appendChild(img);
+      } else if (category === 'video') {
+        const video = document.createElement('video');
+        video.src = fileUrl;
+        video.controls = true;
+        area.appendChild(video);
+      } else {
+        const link = document.createElement('a');
+        link.href = fileUrl;
+        link.className = 'doc-link';
+        link.textContent = `Download ${originalFileName}`;
+        link.target = '_blank';
+        area.appendChild(link);
+      }
     }
   }
 }
