@@ -29,6 +29,15 @@ const MAX_UPLOAD_BYTES = 25 * 1024 * 1024; // 25MB - a demo-safe ceiling, not a 
 
 if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR);
 
+// Last line of defense: log and keep running instead of crashing the whole server
+// on an error that somehow escapes the per-request try/catch below.
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught exception (server kept running):', err);
+});
+process.on('unhandledRejection', (err) => {
+  console.error('Unhandled rejection (server kept running):', err);
+});
+
 // --- Tiny "database" (a JSON file on disk, loaded into memory) ---
 function loadDB() {
   if (!fs.existsSync(DB_FILE)) return {};
@@ -118,6 +127,22 @@ function serveStatic(req, res, pathname) {
 
 // --- Request handler ---
 const server = http.createServer(async (req, res) => {
+  try {
+    await handleRequest(req, res);
+  } catch (e) {
+    // Safety net: without this, ANY unexpected error in a single request
+    // (a malformed URL, a bot probing the server, anything) crashes the
+    // entire process and takes the whole demo down for everyone.
+    console.error('Unhandled request error:', e);
+    if (!res.headersSent) {
+      sendJSON(res, 500, { error: 'Internal server error' });
+    } else {
+      res.end();
+    }
+  }
+});
+
+async function handleRequest(req, res) {
   const parsed = url.parse(req.url, true);
   const pathname = parsed.pathname;
 
@@ -302,7 +327,7 @@ const server = http.createServer(async (req, res) => {
 
   res.writeHead(404);
   res.end('Not found');
-});
+}
 
 server.listen(PORT, () => {
   console.log(`\nTime capsule demo running at http://localhost:${PORT}`);
