@@ -11,6 +11,7 @@
   #content { margin-top: 30px; padding: 24px; background: #f4f4f4; border-radius: 10px; font-size: 18px; line-height: 1.5; text-align: left; white-space: pre-wrap; }
   #attachment-area { margin-top: 20px; display: flex; flex-direction: column; gap: 20px; }
   #attachment-area img, #attachment-area video { max-width: 100%; border-radius: 10px; }
+  #attachment-area iframe.pdf-preview { width: 100%; height: 70vh; border: 1px solid #ddd; border-radius: 10px; }
   #attachment-area a.doc-link { display: inline-block; padding: 12px 20px; background: #1a1a1a; color: white; border-radius: 8px; text-decoration: none; font-size: 15px; }
   .meta { margin-top: 40px; font-size: 12px; color: #999; }
   .lock-icon { font-size: 46px; }
@@ -87,7 +88,7 @@ async function checkCapsule() {
 
     const area = document.getElementById('attachment-area');
     area.innerHTML = '';
-    (data.attachments || []).forEach(({ category, fileUrl, originalFileName }) => {
+    (data.attachments || []).forEach(({ category, fileUrl, originalFileName, mimeType }) => {
       if (category === 'image') {
         const img = document.createElement('img');
         img.src = fileUrl;
@@ -98,7 +99,18 @@ async function checkCapsule() {
         video.src = fileUrl;
         video.controls = true;
         area.appendChild(video);
+      } else if (category === 'document' && mimeType === 'application/pdf') {
+        // PDFs render natively in the browser - no third-party service needed.
+        const iframe = document.createElement('iframe');
+        iframe.src = fileUrl;
+        iframe.className = 'pdf-preview';
+        iframe.title = originalFileName;
+        area.appendChild(iframe);
       } else {
+        // Word docs and other formats have no native inline preview in browsers.
+        // Deliberately not routing these through a third-party viewer service,
+        // since that would mean sharing the file's URL outside this server -
+        // not something to do casually with family/personal content.
         const link = document.createElement('a');
         link.href = fileUrl;
         link.className = 'doc-link';
