@@ -3,153 +3,122 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Your Capsule</title>
+<title>Add to This Vault</title>
 <style>
-  body { font-family: -apple-system, Arial, sans-serif; max-width: 520px; margin: 60px auto; padding: 0 20px; text-align: center; color: #1a1a1a; }
-  #countdown { font-size: 40px; font-weight: 700; margin: 30px 0 10px; letter-spacing: 1px; }
-  #status { font-size: 15px; color: #666; }
-  #contributions { text-align: left; margin-top: 30px; }
-  .contribution-block { padding: 24px; background: #f4f4f4; border-radius: 10px; margin-bottom: 20px; }
-  .contribution-name { font-weight: 700; font-size: 14px; color: #555; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px; }
-  .contribution-message { font-size: 18px; line-height: 1.5; white-space: pre-wrap; }
-  .attachment-area { margin-top: 16px; display: flex; flex-direction: column; gap: 16px; }
-  .attachment-area img, .attachment-area video { max-width: 100%; border-radius: 10px; }
-  .attachment-area iframe.pdf-preview { width: 100%; height: 70vh; border: 1px solid #ddd; border-radius: 10px; }
-  .attachment-area a.doc-link { display: inline-block; padding: 12px 20px; background: #1a1a1a; color: white; border-radius: 8px; text-decoration: none; font-size: 15px; }
-  .meta { margin-top: 40px; font-size: 12px; color: #999; }
-  .lock-icon { font-size: 46px; }
+  body { font-family: -apple-system, Arial, sans-serif; max-width: 520px; margin: 60px auto; padding: 0 20px; color: #1a1a1a; }
+  h1 { font-size: 22px; }
+  label { display: block; margin-top: 16px; font-weight: 600; font-size: 14px; }
+  input, textarea { width: 100%; padding: 8px; margin-top: 6px; font-size: 14px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 6px; }
+  button { margin-top: 20px; padding: 10px 18px; font-size: 14px; background: #1a1a1a; color: white; border: none; border-radius: 6px; cursor: pointer; }
+  button:hover { background: #333; }
+  #result { margin-top: 24px; padding: 14px; background: #f4f4f4; border-radius: 8px; font-size: 14px; display: none; }
+  .hint { color: #666; font-size: 13px; margin-top: 4px; }
+  #teaser-box { background: #f4f4f4; padding: 14px; border-radius: 8px; margin-bottom: 20px; font-size: 14px; color: #444; }
+  #form-area.hidden, #teaser-box.hidden { display: none; }
 </style>
 </head>
 <body>
-  <div id="locked-view">
-    <div class="lock-icon">🔒</div>
-    <h1>Locked</h1>
-    <div id="teaser" style="font-size:16px; color:#555; margin-bottom:10px;"></div>
-    <div id="countdown">--:--:--:--</div>
-    <div id="status">Checking with the server...</div>
+  <h1>🎁 Add to This Vault</h1>
+  <p class="hint">You can only add your own content here — this page never shows what anyone else has already added, even you if you come back. That's by design, not a bug.</p>
+
+  <div id="teaser-box"></div>
+
+  <div id="form-area">
+    <label for="contributorName">Your name (optional, shown when the vault opens)</label>
+    <input type="text" id="contributorName" placeholder="Dad">
+
+    <label for="message">Your Message</label>
+    <textarea id="message" rows="4" placeholder="Happy graduation! We're so proud of you..."></textarea>
+
+    <label for="mediaFiles">Photos &amp; Videos (optional)</label>
+    <input type="file" id="mediaFiles" accept="image/*,video/*" multiple>
+
+    <label for="docFiles">Documents (optional)</label>
+    <input type="file" id="docFiles" accept=".pdf,.doc,.docx,.txt,.rtf" multiple>
+    <p class="hint">Keep each file under 25MB, combined under 100MB.</p>
+
+    <button onclick="submitContribution()">Add My Content</button>
   </div>
 
-  <div id="unlocked-view" style="display:none;">
-    <div class="lock-icon">🎁</div>
-    <h1>Unlocked!</h1>
-    <div id="contributions"></div>
-  </div>
-
-  <div class="meta" id="viewcount"></div>
+  <div id="result"></div>
 
 <script>
 const params = new URLSearchParams(window.location.search);
 const capsuleId = params.get('id');
 
 if (!capsuleId) {
-  document.body.innerHTML = '<p>No capsule ID provided.</p>';
+  document.body.innerHTML = '<p>No vault ID provided.</p>';
 }
 
-function formatCountdown(totalSeconds) {
-  const d = Math.floor(totalSeconds / 86400);
-  const h = Math.floor((totalSeconds % 86400) / 3600);
-  const m = Math.floor((totalSeconds % 3600) / 60);
-  const s = Math.floor(totalSeconds % 60);
-  return `${d}d ${h}h ${m}m ${s}s`;
-}
-
-let pollInterval = null;
-let hasRenderedUnlocked = false;
-
-async function checkCapsule() {
+// Show the teaser/countdown context only - this call is safe because the server
+// never includes any contribution content in the locked-state response.
+async function loadTeaser() {
   const res = await fetch(`/api/capsules/${capsuleId}`);
   if (!res.ok) {
-    document.getElementById('status').textContent = 'Capsule not found.';
-    if (pollInterval) clearInterval(pollInterval);
+    document.getElementById('teaser-box').textContent = 'Vault not found.';
+    document.getElementById('form-area').classList.add('hidden');
     return;
   }
   const data = await res.json();
-  document.getElementById('viewcount').textContent = `Checked ${data.viewCount} time(s) — every check hits the server, never the visitor's own clock.`;
-
   if (data.locked) {
-    document.getElementById('teaser').textContent = data.lockMessage || '';
-    document.getElementById('countdown').textContent = formatCountdown(data.secondsRemaining);
-    document.getElementById('status').textContent =
-      data.secondsRemaining > 0
-        ? "The server refuses to send the content — it isn't just hidden, it was never sent."
-        : "Unlocking...";
+    document.getElementById('teaser-box').textContent = data.lockMessage
+      ? `${data.lockMessage} (unlocks in ${Math.max(0, Math.floor(data.secondsRemaining / 86400))} day(s))`
+      : `This vault is still open for contributions.`;
   } else {
-    // Stop polling now that it's unlocked - nothing else is going to change,
-    // and re-polling would tear down and restart any playing video/audio every second.
-    if (pollInterval) {
-      clearInterval(pollInterval);
-      pollInterval = null;
-    }
-
-    if (hasRenderedUnlocked) return; // already built the unlocked view once, don't rebuild it
-    hasRenderedUnlocked = true;
-
-    document.getElementById('locked-view').style.display = 'none';
-    document.getElementById('unlocked-view').style.display = 'block';
-
-    const container = document.getElementById('contributions');
-    container.innerHTML = '';
-
-    (data.contributions || []).forEach((contribution) => {
-      const block = document.createElement('div');
-      block.className = 'contribution-block';
-
-      if (contribution.contributorName) {
-        const nameEl = document.createElement('div');
-        nameEl.className = 'contribution-name';
-        nameEl.textContent = `From ${contribution.contributorName}`;
-        block.appendChild(nameEl);
-      }
-
-      if (contribution.message) {
-        const msgEl = document.createElement('div');
-        msgEl.className = 'contribution-message';
-        msgEl.textContent = contribution.message;
-        block.appendChild(msgEl);
-      }
-
-      const area = document.createElement('div');
-      area.className = 'attachment-area';
-      (contribution.attachments || []).forEach(({ category, fileUrl, originalFileName, mimeType }) => {
-        if (category === 'image') {
-          const img = document.createElement('img');
-          img.src = fileUrl;
-          img.alt = originalFileName;
-          area.appendChild(img);
-        } else if (category === 'video') {
-          const video = document.createElement('video');
-          video.src = fileUrl;
-          video.controls = true;
-          area.appendChild(video);
-        } else if (category === 'document' && mimeType === 'application/pdf') {
-          // PDFs render natively in the browser - no third-party service needed.
-          const iframe = document.createElement('iframe');
-          iframe.src = fileUrl;
-          iframe.className = 'pdf-preview';
-          iframe.title = originalFileName;
-          area.appendChild(iframe);
-        } else {
-          // Word docs and other formats have no native inline preview in browsers.
-          // Deliberately not routing these through a third-party viewer service,
-          // since that would mean sharing the file's URL outside this server -
-          // not something to do casually with family/personal content.
-          const link = document.createElement('a');
-          link.href = fileUrl;
-          link.className = 'doc-link';
-          link.textContent = `Download ${originalFileName}`;
-          link.target = '_blank';
-          area.appendChild(link);
-        }
-      });
-      block.appendChild(area);
-
-      container.appendChild(block);
-    });
+    document.getElementById('teaser-box').textContent = 'This vault has already unlocked - it is no longer accepting new contributions.';
+    document.getElementById('form-area').classList.add('hidden');
   }
 }
+loadTeaser();
 
-checkCapsule();
-pollInterval = setInterval(checkCapsule, 1000); // only matters while still locked; stopped automatically on unlock
+async function submitContribution() {
+  const contributorName = document.getElementById('contributorName').value.trim();
+  const message = document.getElementById('message').value.trim();
+  const files = [
+    ...Array.from(document.getElementById('mediaFiles').files),
+    ...Array.from(document.getElementById('docFiles').files),
+  ];
+
+  if (!message && files.length === 0) {
+    alert('Please add a message or at least one attachment.');
+    return;
+  }
+
+  const attachments = await Promise.all(files.map((file) => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve({ dataUrl: reader.result, fileName: file.name });
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  }));
+
+  const res = await fetch(`/api/capsules/${capsuleId}/contribute`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ contributorName, message, attachments })
+  });
+  const data = await res.json();
+
+  const resultDiv = document.getElementById('result');
+  resultDiv.style.display = 'block';
+
+  if (data.error) {
+    resultDiv.innerHTML = `<strong>Error:</strong> ${data.error}`;
+    return;
+  }
+
+  // Show back only what THIS person just submitted - never fetched from the
+  // server, just the data already sitting in this browser's own form.
+  document.getElementById('form-area').classList.add('hidden');
+  resultDiv.innerHTML = `
+    <strong>Added!</strong> Here's what you just submitted:<br><br>
+    ${contributorName ? `<strong>From:</strong> ${contributorName}<br>` : ''}
+    ${message ? `<strong>Message:</strong> ${message}<br>` : ''}
+    ${files.length ? `<strong>Files:</strong> ${files.map(f => f.name).join(', ')}<br>` : ''}
+    <br>This is sealed in the vault now - you won't see it (or anyone else's contribution) again until it unlocks.
+  `;
+}
 </script>
 </body>
 </html>
