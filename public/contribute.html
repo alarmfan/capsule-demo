@@ -42,12 +42,18 @@
 
   <div id="result"></div>
 
+  <p class="hint" style="margin-top:30px; text-align:center;">
+    <a id="view-link" href="#">Looking for the view link for this vault instead?</a>
+  </p>
+
 <script>
 const params = new URLSearchParams(window.location.search);
 const capsuleId = params.get('id');
 
 if (!capsuleId) {
   document.body.innerHTML = '<p>No vault ID provided.</p>';
+} else {
+  document.getElementById('view-link').href = `/capsule.html?id=${capsuleId}`;
 }
 
 // Show the teaser/countdown context only - this call is safe because the server
