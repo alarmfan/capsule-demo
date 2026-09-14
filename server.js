@@ -6,9 +6,17 @@
  *   - Long, random, unguessable capsule IDs (no sequential /1, /2, /3 guessing)
  *   - Content is NEVER sent to the browser until the server itself confirms unlock time has passed
  *
- * Attachments (photo, video, or document) are saved as real files in ./uploads,
- * not embedded as base64 in the JSON database - keeps the database small and fast
- * even as attachments get larger.
+ * Multi-contributor model:
+ *   - A capsule holds an ordered list of "contributions" - each one is a message
+ *     plus optional attachments from one contributor.
+ *   - The CONTRIBUTE link lets anyone add a new contribution before unlock. That
+ *     page never reads or displays existing contributions - it only accepts new
+ *     ones - so contributors can only see their own content, never each other's.
+ *   - The VIEW link (for whoever opens the vault after unlock) shows everything
+ *     from everyone, combined, only after the server-side unlock check passes.
+ *
+ * Attachments are saved as real files in ./uploads, not embedded as base64 in
+ * the JSON database - keeps the database small and fast even as they get larger.
  *
  * Deliberately zero dependencies (no npm install needed) so it runs anywhere with Node installed.
  * Run with:  node server.js
@@ -26,7 +34,8 @@ const DB_FILE = path.join(__dirname, 'capsules.json');
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const UPLOADS_DIR = path.join(__dirname, 'uploads');
 const MAX_UPLOAD_BYTES = 25 * 1024 * 1024; // 25MB per attachment - a demo-safe ceiling, not a production limit
-const MAX_ATTACHMENTS = 6; // per capsule, for demo sanity
+const MAX_ATTACHMENTS_PER_CONTRIBUTION = 6;
+const MAX_CONTRIBUTIONS = 20; // per capsule, for demo sanity
 const MAX_TOTAL_REQUEST_BYTES = 100 * 1024 * 1024; // overall request ceiling, since several attachments can add up
 
 if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR);
@@ -109,6 +118,52 @@ function extensionFromFileName(fileName) {
   return ext || '';
 }
 
+// Saves one contribution's attachments to disk, returns their metadata.
+// Throws { statusCode, error } on validation failure so callers can respond cleanly.
+function saveAttachments(attachmentList, capsuleId, contributionIndex) {
+  if (attachmentList.length > MAX_ATTACHMENTS_PER_CONTRIBUTION) {
+    throw { statusCode: 400, error: `Too many attachments. Keep it to ${MAX_ATTACHMENTS_PER_CONTRIBUTION} or fewer per contribution.` };
+  }
+  const saved = [];
+  for (let i = 0; i < attachmentList.length; i++) {
+    const item = attachmentList[i];
+    if (!item || !item.dataUrl) continue;
+
+    const match = item.dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+    if (!match) {
+      throw { statusCode: 400, error: `Attachment ${i + 1} was not a valid file upload` };
+    }
+    const mimeType = match[1];
+    const buffer = Buffer.from(match[2], 'base64');
+
+    if (buffer.length > MAX_UPLOAD_BYTES) {
+      throw { statusCode: 413, error: `Attachment ${i + 1} is too large. Keep each file under ${MAX_UPLOAD_BYTES / (1024 * 1024)}MB.` };
+    }
+
+    const ext = extensionFromFileName(item.fileName);
+    const storedFileName = `${capsuleId}-c${contributionIndex}-${i}${ext}`;
+    fs.writeFileSync(path.join(UPLOADS_DIR, storedFileName), buffer);
+
+    saved.push({
+      storedFileName,
+      originalFileName: item.fileName || storedFileName,
+      mimeType,
+      category: classifyMimeType(mimeType),
+    });
+  }
+  return saved;
+}
+
+// Flattens all contributions' attachments into one ordered list, so the file
+// endpoint can address any attachment in the capsule with a single flat index.
+function flattenAttachments(capsule) {
+  const flat = [];
+  (capsule.contributions || []).forEach((contribution) => {
+    (contribution.attachments || []).forEach((att) => flat.push(att));
+  });
+  return flat;
+}
+
 function serveStatic(req, res, pathname) {
   let filePath = path.join(PUBLIC_DIR, pathname === '/' ? 'index.html' : pathname);
   if (!filePath.startsWith(PUBLIC_DIR)) {
@@ -148,7 +203,7 @@ async function handleRequest(req, res) {
   const parsed = url.parse(req.url, true);
   const pathname = parsed.pathname;
 
-  // POST /api/capsules -> create a new capsule
+  // POST /api/capsules -> create a new capsule with its first contribution
   if (req.method === 'POST' && pathname === '/api/capsules') {
     let body;
     try {
@@ -161,16 +216,11 @@ async function handleRequest(req, res) {
     }
 
     try {
-      const { lockMessage, unlockMessage, unlockAt, attachments } = body;
-      // attachments (optional) = [{ dataUrl: "data:<mime>;base64,<data>", fileName: "video.mp4" }, ...]
-
+      const { lockMessage, unlockAt, contributorName, message, attachments } = body;
       const attachmentList = Array.isArray(attachments) ? attachments : [];
 
-      if ((!unlockMessage && attachmentList.length === 0) || !unlockAt) {
-        return sendJSON(res, 400, { error: 'unlockMessage (or at least one attachment) and unlockAt (ISO date string) are required' });
-      }
-      if (attachmentList.length > MAX_ATTACHMENTS) {
-        return sendJSON(res, 400, { error: `Too many attachments. Keep it to ${MAX_ATTACHMENTS} or fewer per capsule.` });
+      if ((!message && attachmentList.length === 0) || !unlockAt) {
+        return sendJSON(res, 400, { error: 'message (or at least one attachment) and unlockAt (ISO date string) are required' });
       }
       const unlockTimestamp = new Date(unlockAt).getTime();
       if (isNaN(unlockTimestamp)) {
@@ -180,46 +230,93 @@ async function handleRequest(req, res) {
       const db = loadDB();
       const id = generateCapsuleId();
 
-      const savedAttachments = [];
-      for (let i = 0; i < attachmentList.length; i++) {
-        const item = attachmentList[i];
-        if (!item || !item.dataUrl) continue;
-
-        const match = item.dataUrl.match(/^data:([^;]+);base64,(.+)$/);
-        if (!match) {
-          return sendJSON(res, 400, { error: `Attachment ${i + 1} was not a valid file upload` });
-        }
-        const mimeType = match[1];
-        const base64Data = match[2];
-        const buffer = Buffer.from(base64Data, 'base64');
-
-        if (buffer.length > MAX_UPLOAD_BYTES) {
-          return sendJSON(res, 413, { error: `Attachment ${i + 1} is too large. Keep each file under ${MAX_UPLOAD_BYTES / (1024 * 1024)}MB.` });
-        }
-
-        const ext = extensionFromFileName(item.fileName);
-        const storedFileName = `${id}-${i}${ext}`; // -i keeps filenames unique within a capsule
-        fs.writeFileSync(path.join(UPLOADS_DIR, storedFileName), buffer);
-
-        savedAttachments.push({
-          storedFileName,
-          originalFileName: item.fileName || storedFileName,
-          mimeType,
-          category: classifyMimeType(mimeType), // 'image' | 'video' | 'document'
-        });
+      let savedAttachments;
+      try {
+        savedAttachments = saveAttachments(attachmentList, id, 0);
+      } catch (err) {
+        return sendJSON(res, err.statusCode || 400, { error: err.error || 'Invalid attachment' });
       }
 
       db[id] = {
         lockMessage: lockMessage || null, // shown BEFORE unlock, e.g. "Don't open until Christmas!"
-        unlockMessage: unlockMessage || null, // shown AFTER unlock
-        attachments: savedAttachments, // metadata only - actual files live in /uploads
         unlockAt: unlockTimestamp,
         createdAt: Date.now(),
         viewCount: 0,
+        contributions: [
+          {
+            contributorName: contributorName || null,
+            message: message || null,
+            attachments: savedAttachments,
+            submittedAt: Date.now(),
+          },
+        ],
       };
       saveDB(db);
 
-      return sendJSON(res, 201, { id, viewUrl: `/capsule.html?id=${id}` });
+      return sendJSON(res, 201, {
+        id,
+        viewUrl: `/capsule.html?id=${id}`,
+        contributeUrl: `/contribute.html?id=${id}`,
+      });
+    } catch (e) {
+      return sendJSON(res, 400, { error: 'Invalid request body' });
+    }
+  }
+
+  // POST /api/capsules/:id/contribute -> add another contribution before unlock.
+  // Deliberately does NOT return or reveal any existing contribution - this
+  // endpoint only ever accepts new content, it never shows what's already inside.
+  const contributeMatch = pathname.match(/^\/api\/capsules\/([a-f0-9]+)\/contribute$/);
+  if (req.method === 'POST' && contributeMatch) {
+    const id = contributeMatch[1];
+    const db = loadDB();
+    const capsule = db[id];
+
+    if (!capsule) {
+      return sendJSON(res, 404, { error: 'Capsule not found' });
+    }
+    if (Date.now() >= capsule.unlockAt) {
+      return sendJSON(res, 403, { error: 'This vault has already unlocked - no more contributions can be added.' });
+    }
+    if ((capsule.contributions || []).length >= MAX_CONTRIBUTIONS) {
+      return sendJSON(res, 400, { error: `This vault already has the maximum of ${MAX_CONTRIBUTIONS} contributions.` });
+    }
+
+    let body;
+    try {
+      body = await readBody(req);
+    } catch (e) {
+      if (e.message === 'PAYLOAD_TOO_LARGE') {
+        return sendJSON(res, 413, { error: `Attachments too large in total. Keep combined uploads under ${MAX_TOTAL_REQUEST_BYTES / (1024 * 1024)}MB.` });
+      }
+      return sendJSON(res, 400, { error: 'Invalid request body' });
+    }
+
+    try {
+      const { contributorName, message, attachments } = body;
+      const attachmentList = Array.isArray(attachments) ? attachments : [];
+
+      if (!message && attachmentList.length === 0) {
+        return sendJSON(res, 400, { error: 'A message or at least one attachment is required' });
+      }
+
+      const contributionIndex = capsule.contributions.length;
+      let savedAttachments;
+      try {
+        savedAttachments = saveAttachments(attachmentList, id, contributionIndex);
+      } catch (err) {
+        return sendJSON(res, err.statusCode || 400, { error: err.error || 'Invalid attachment' });
+      }
+
+      capsule.contributions.push({
+        contributorName: contributorName || null,
+        message: message || null,
+        attachments: savedAttachments,
+        submittedAt: Date.now(),
+      });
+      saveDB(db);
+
+      return sendJSON(res, 201, { added: true });
     } catch (e) {
       return sendJSON(res, 400, { error: 'Invalid request body' });
     }
@@ -245,7 +342,7 @@ async function handleRequest(req, res) {
     const isUnlocked = now >= capsule.unlockAt;
 
     if (!isUnlocked) {
-      // Locked: no attachment metadata, no file link, no content. Just the teaser and countdown.
+      // Locked: no contribution content leaves the server at all. Just the teaser and countdown.
       return sendJSON(res, 200, {
         locked: true,
         lockMessage: capsule.lockMessage || null,
@@ -254,31 +351,46 @@ async function handleRequest(req, res) {
         viewCount: capsule.viewCount,
       });
     } else {
+      const flatAttachments = flattenAttachments(capsule);
+      let flatCursor = 0;
+      const contributions = (capsule.contributions || []).map((c) => {
+        const attachmentsOut = (c.attachments || []).map(() => {
+          const flatIndex = flatCursor;
+          flatCursor++;
+          const att = flatAttachments[flatIndex];
+          return {
+            category: att.category,
+            originalFileName: att.originalFileName,
+            mimeType: att.mimeType,
+            fileUrl: `/api/capsules/${id}/file/${flatIndex}`,
+          };
+        });
+        return {
+          contributorName: c.contributorName || null,
+          message: c.message || null,
+          attachments: attachmentsOut,
+        };
+      });
+
       return sendJSON(res, 200, {
         locked: false,
-        unlockMessage: capsule.unlockMessage,
-        attachments: (capsule.attachments || []).map((att, i) => ({
-          category: att.category,
-          originalFileName: att.originalFileName,
-          mimeType: att.mimeType,
-          fileUrl: `/api/capsules/${id}/file/${i}`,
-        })),
+        contributions,
         unlockAt: capsule.unlockAt,
         viewCount: capsule.viewCount,
       });
     }
   }
 
-  // GET /api/capsules/:id/file/:index -> serves one attachment, gated exactly like the content itself
+  // GET /api/capsules/:id/file/:index -> serves one attachment (flat index across
+  // all contributions), gated exactly like the content itself
   const fileMatch = pathname.match(/^\/api\/capsules\/([a-f0-9]+)\/file\/(\d+)$/);
   if (req.method === 'GET' && fileMatch) {
     const id = fileMatch[1];
     const index = parseInt(fileMatch[2], 10);
     const db = loadDB();
     const capsule = db[id];
-    const attachment = capsule && capsule.attachments && capsule.attachments[index];
 
-    if (!attachment) {
+    if (!capsule) {
       res.writeHead(404);
       return res.end('Not found');
     }
@@ -288,6 +400,13 @@ async function handleRequest(req, res) {
     if (!isUnlocked) {
       res.writeHead(403, { 'Content-Type': 'application/json' });
       return res.end(JSON.stringify({ error: 'Locked' }));
+    }
+
+    const flatAttachments = flattenAttachments(capsule);
+    const attachment = flatAttachments[index];
+    if (!attachment) {
+      res.writeHead(404);
+      return res.end('Not found');
     }
 
     const filePath = path.join(UPLOADS_DIR, attachment.storedFileName);
