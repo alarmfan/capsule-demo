@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Your Capsule</title>
+<style>
+  body { font-family: -apple-system, Arial, sans-serif; max-width: 520px; margin: 60px auto; padding: 0 20px; text-align: center; color: #1a1a1a; }
+  #countdown { font-size: 40px; font-weight: 700; margin: 30px 0 10px; letter-spacing: 1px; }
+  #status { font-size: 15px; color: #666; }
+  #contributions { text-align: left; margin-top: 30px; }
+  .contribution-block { padding: 24px; background: #f4f4f4; border-radius: 10px; margin-bottom: 20px; }
+  .contribution-name { font-weight: 700; font-size: 14px; color: #555; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .contribution-message { font-size: 18px; line-height: 1.5; white-space: pre-wrap; }
+  .attachment-area { margin-top: 16px; display: flex; flex-direction: column; gap: 16px; }
+  .attachment-area img, .attachment-area video { max-width: 100%; border-radius: 10px; }
+  .attachment-area iframe.pdf-preview { width: 100%; height: 70vh; border: 1px solid #ddd; border-radius: 10px; }
+  .attachment-area a.doc-link { display: inline-block; padding: 12px 20px; background: #1a1a1a; color: white; border-radius: 8px; text-decoration: none; font-size: 15px; }
+  .meta { margin-top: 40px; font-size: 12px; color: #999; }
+  .lock-icon { font-size: 46px; }
+</style>
+</head>
+<body>
+  <div id="locked-view">
+    <div class="lock-icon">🔒</div>
+    <h1>Locked</h1>
+    <div id="teaser" style="font-size:16px; color:#555; margin-bottom:10px;"></div>
+    <div id="countdown">--:--:--:--</div>
+    <div id="status">Checking with the server...</div>
+  </div>
+
+  <div id="unlocked-view" style="display:none;">
+    <div class="lock-icon">🎁</div>
+    <h1>Unlocked!</h1>
+    <div id="contributions"></div>
+  </div>
+
+  <div class="meta" id="viewcount"></div>
+
+<script>
+const params = new URLSearchParams(window.location.search);
+const capsuleId = params.get('id');
+
+if (!capsuleId) {
+  document.body.innerHTML = '<p>No capsule ID provided.</p>';
+}
+
+function formatCountdown(totalSeconds) {
+  const d = Math.floor(totalSeconds / 86400);
+  const h = Math.floor((totalSeconds % 86400) / 3600);
+  const m = Math.floor((totalSeconds % 3600) / 60);
+  const s = Math.floor(totalSeconds % 60);
+  return `${d}d ${h}h ${m}m ${s}s`;
+}
+
+let pollInterval = null;
+let hasRenderedUnlocked = false;
+
+async function checkCapsule() {
+  const res = await fetch(`/api/capsules/${capsuleId}`);
+  if (!res.ok) {
+    document.getElementById('status').textContent = 'Capsule not found.';
+    if (pollInterval) clearInterval(pollInterval);
+    return;
+  }
+  const data = await res.json();
+  document.getElementById('viewcount').textContent = `Checked ${data.viewCount} time(s) — every check hits the server, never the visitor's own clock.`;
+
+  if (data.locked) {
+    document.getElementById('teaser').textContent = data.lockMessage || '';
+    document.getElementById('countdown').textContent = formatCountdown(data.secondsRemaining);
+    document.getElementById('status').textContent =
+      data.secondsRemaining > 0
+        ? "The server refuses to send the content — it isn't just hidden, it was never sent."
+        : "Unlocking...";
+  } else {
+    // Stop polling now that it's unlocked - nothing else is going to change,
+    // and re-polling would tear down and restart any playing video/audio every second.
+    if (pollInterval) {
+      clearInterval(pollInterval);
+      pollInterval = null;
+    }
+
+    if (hasRenderedUnlocked) return; // already built the unlocked view once, don't rebuild it
+    hasRenderedUnlocked = true;
+
+    document.getElementById('locked-view').style.display = 'none';
+    document.getElementById('unlocked-view').style.display = 'block';
+
+    const container = document.getElementById('contributions');
+    container.innerHTML = '';
+
+    (data.contributions || []).forEach((contribution) => {
+      const block = document.createElement('div');
+      block.className = 'contribution-block';
+
+      if (contribution.contributorName) {
+        const nameEl = document.createElement('div');
+        nameEl.className = 'contribution-name';
+        nameEl.textContent = `From ${contribution.contributorName}`;
+        block.appendChild(nameEl);
+      }
+
+      if (contribution.message) {
+        const msgEl = document.createElement('div');
+        msgEl.className = 'contribution-message';
+        msgEl.textContent = contribution.message;
+        block.appendChild(msgEl);
+      }
+
+      const area = document.createElement('div');
+      area.className = 'attachment-area';
+      (contribution.attachments || []).forEach(({ category, fileUrl, originalFileName, mimeType }) => {
+        if (category === 'image') {
+          const img = document.createElement('img');
+          img.src = fileUrl;
+          img.alt = originalFileName;
+          area.appendChild(img);
+        } else if (category === 'video') {
+          const video = document.createElement('video');
+          video.src = fileUrl;
+          video.controls = true;
+          area.appendChild(video);
+        } else if (category === 'document' && mimeType === 'application/pdf') {
+          // PDFs render natively in the browser - no third-party service needed.
+          const iframe = document.createElement('iframe');
+          iframe.src = fileUrl;
+          iframe.className = 'pdf-preview';
+          iframe.title = originalFileName;
+          area.appendChild(iframe);
+        } else {
+          // Word docs and other formats have no native inline preview in browsers.
+          // Deliberately not routing these through a third-party viewer service,
+          // since that would mean sharing the file's URL outside this server -
+          // not something to do casually with family/personal content.
+          const link = document.createElement('a');
+          link.href = fileUrl;
+          link.className = 'doc-link';
+          link.textContent = `Download ${originalFileName}`;
+          link.target = '_blank';
+          area.appendChild(link);
+        }
+      });
+      block.appendChild(area);
+
+      container.appendChild(block);
+    });
+  }
+}
+
+checkCapsule();
+pollInterval = setInterval(checkCapsule, 1000); // only matters while still locked; stopped automatically on unlock
+</script>
+</body>
+</html>
