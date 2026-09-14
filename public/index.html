@@ -23,8 +23,11 @@
   <label for="lockMessage">Lock Screen Message (optional teaser, shown before unlock)</label>
   <textarea id="lockMessage" rows="2" placeholder="Don't open until Christmas morning!"></textarea>
 
-  <label for="unlockMessage">Unlocked Capsule Message (the real content, revealed after unlock)</label>
-  <textarea id="unlockMessage" rows="4" placeholder="Merry Christmas! Here's our family video..."></textarea>
+  <label for="contributorName">Your name (optional, shown when the vault opens)</label>
+  <input type="text" id="contributorName" placeholder="Mom">
+
+  <label for="message">Your Message (the real content, revealed after unlock)</label>
+  <textarea id="message" rows="4" placeholder="Merry Christmas! Here's our family video..."></textarea>
 
   <label for="mediaFiles">Photos &amp; Videos (optional, revealed after unlock)</label>
   <input type="file" id="mediaFiles" accept="image/*,video/*" multiple>
@@ -45,15 +48,16 @@
 <script>
 async function createCapsule() {
   const lockMessage = document.getElementById('lockMessage').value.trim();
-  const unlockMessage = document.getElementById('unlockMessage').value.trim();
+  const contributorName = document.getElementById('contributorName').value.trim();
+  const message = document.getElementById('message').value.trim();
   const unlockAtLocal = document.getElementById('unlockAt').value;
   const files = [
     ...Array.from(document.getElementById('mediaFiles').files),
     ...Array.from(document.getElementById('docFiles').files),
   ];
 
-  if ((!unlockMessage && files.length === 0) || !unlockAtLocal) {
-    alert('Please provide an unlock message or at least one attachment, and an unlock date.');
+  if ((!message && files.length === 0) || !unlockAtLocal) {
+    alert('Please provide a message or at least one attachment, and an unlock date.');
     return;
   }
 
@@ -71,7 +75,7 @@ async function createCapsule() {
   const res = await fetch('/api/capsules', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ lockMessage, unlockMessage, unlockAt, attachments })
+    body: JSON.stringify({ lockMessage, contributorName, message, unlockAt, attachments })
   });
   const data = await res.json();
 
@@ -82,12 +86,15 @@ async function createCapsule() {
     return;
   }
 
-  const fullUrl = window.location.origin + data.viewUrl;
+  const fullViewUrl = window.location.origin + data.viewUrl;
+  const fullContributeUrl = window.location.origin + data.contributeUrl;
   resultDiv.style.display = 'block';
   resultDiv.innerHTML = `
-    <strong>Capsule created.</strong><br>
-    This link is the stand-in for the NFC tap destination:<br>
-    <a href="${data.viewUrl}" target="_blank">${fullUrl}</a><br><br>
+    <strong>Vault created.</strong><br><br>
+    <strong>View link</strong> — for whoever opens the vault after unlock (shows everything from everyone):<br>
+    <a href="${data.viewUrl}" target="_blank">${fullViewUrl}</a><br><br>
+    <strong>Contribute link</strong> — share with anyone else who should add their own content. They can only add — they'll never see what you or anyone else has already put in:<br>
+    <a href="${data.contributeUrl}" target="_blank">${fullContributeUrl}</a><br><br>
     Notice the ID is long and random — not <code>/capsule/1</code>, <code>/capsule/2</code> — so it can't be guessed.
   `;
 }
