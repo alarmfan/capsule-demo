@@ -376,6 +376,45 @@ async function handleRequest(req, res) {
     });
   }
 
+  // POST /api/admin/uids/reset -> unlinks a tag's UID from whatever vault it
+  // currently points to, so the same physical tag can be tapped again during a
+  // demo without jumping straight to the old vault. Does NOT delete the old
+  // vault itself - it just forgets that this UID points to it.
+  if (req.method === 'POST' && pathname === '/api/admin/uids/reset') {
+    const providedKey = req.headers['x-admin-key'];
+    if (!providedKey || providedKey !== ADMIN_KEY) {
+      return sendJSON(res, 401, { error: 'Invalid or missing admin key.' });
+    }
+
+    let body;
+    try {
+      body = await readBody(req);
+    } catch (e) {
+      return sendJSON(res, 400, { error: 'Invalid request body' });
+    }
+
+    const uid = normalizeUid(body.uid);
+    if (!uid) {
+      return sendJSON(res, 400, { error: 'uid is required' });
+    }
+
+    const uids = loadUids();
+    const entry = uids[uid];
+    if (!entry) {
+      return sendJSON(res, 404, { error: 'That UID is not currently linked to anything.' });
+    }
+
+    const previousCapsuleId = entry.capsuleId || null;
+    delete uids[uid];
+    saveUids(uids);
+
+    return sendJSON(res, 200, {
+      reset: true,
+      uid,
+      previouslyLinkedCapsuleId: previousCapsuleId, // the old vault still exists, just orphaned from this tag now
+    });
+  }
+
   // POST /api/capsules -> create a new capsule with its first contribution
   if (req.method === 'POST' && pathname === '/api/capsules') {
     const clientKey = getClientKey(req);
