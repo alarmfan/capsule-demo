@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Demo Reset Tool</title>
+<style>
+  body { font-family: -apple-system, Arial, sans-serif; max-width: 480px; margin: 60px auto; padding: 0 20px; color: #1a1a1a; }
+  h1 { font-size: 22px; }
+  p.sub { color: #666; font-size: 14px; margin-top: -8px; }
+  label { display: block; font-size: 13px; font-weight: 700; margin-top: 20px; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px; color: #555; }
+  input { width: 100%; padding: 12px; font-size: 16px; border: 1px solid #ccc; border-radius: 8px; box-sizing: border-box; }
+  button { margin-top: 24px; width: 100%; padding: 14px; font-size: 16px; font-weight: 700; background: #1a1a1a; color: white; border: none; border-radius: 8px; cursor: pointer; }
+  button:disabled { opacity: 0.5; cursor: default; }
+  #result { margin-top: 24px; padding: 16px; border-radius: 8px; font-size: 14px; white-space: pre-wrap; display: none; }
+  #result.ok { display: block; background: #e8f5e9; color: #1b5e20; }
+  #result.err { display: block; background: #fdecea; color: #b71c1c; }
+  .hint { font-size: 12px; color: #999; margin-top: 4px; }
+</style>
+</head>
+<body>
+  <h1>Demo Reset Tool</h1>
+  <p class="sub">Resets an activation code and/or a tag's UID link so you can reuse the same sticker for another demo.</p>
+
+  <label for="adminKey">Admin Key</label>
+  <input id="adminKey" type="password" placeholder="Admin key" autocomplete="off">
+  <div class="hint">Saved in this browser only, never sent anywhere except this server.</div>
+
+  <label for="code">Activation Code (optional)</label>
+  <input id="code" type="text" placeholder="e.g. AB3XY-92KLM" autocomplete="off">
+
+  <label for="uid">Tag UID (optional)</label>
+  <input id="uid" type="text" placeholder="e.g. 04FC2769CE2A81" autocomplete="off">
+  <div class="hint">Leave either field blank if you only need to reset one of them.</div>
+
+  <button id="resetBtn">Reset for Demo</button>
+
+  <div id="result"></div>
+
+<script>
+const adminKeyInput = document.getElementById('adminKey');
+const codeInput = document.getElementById('code');
+const uidInput = document.getElementById('uid');
+const resultEl = document.getElementById('result');
+const btn = document.getElementById('resetBtn');
+
+// Remember the admin key locally so you're not retyping it every demo.
+adminKeyInput.value = localStorage.getItem('adminKey') || '';
+adminKeyInput.addEventListener('input', () => {
+  localStorage.setItem('adminKey', adminKeyInput.value);
+});
+
+function showResult(lines, ok) {
+  resultEl.className = ok ? 'ok' : 'err';
+  resultEl.textContent = lines.join('\n');
+}
+
+async function resetCode(adminKey, code) {
+  const res = await fetch('/api/admin/codes/reset', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-admin-key': adminKey },
+    body: JSON.stringify({ code }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(`Code reset failed: ${data.error || res.status}`);
+  return data;
+}
+
+async function resetUid(adminKey, uid) {
+  const res = await fetch('/api/admin/uids/reset', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-admin-key': adminKey },
+    body: JSON.stringify({ uid }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(`UID reset failed: ${data.error || res.status}`);
+  return data;
+}
+
+btn.addEventListener('click', async () => {
+  const adminKey = adminKeyInput.value.trim();
+  const code = codeInput.value.trim();
+  const uid = uidInput.value.trim();
+
+  if (!adminKey) {
+    showResult(['Enter the admin key first.'], false);
+    return;
+  }
+  if (!code && !uid) {
+    showResult(['Enter a code, a UID, or both.'], false);
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = 'Resetting...';
+  const lines = [];
+  let allOk = true;
+
+  if (code) {
+    try {
+      const data = await resetCode(adminKey, code);
+      lines.push(`✓ Code ${data.code} is unclaimed again.`);
+    } catch (e) {
+      allOk = false;
+      lines.push(`✗ ${e.message}`);
+    }
+  }
+
+  if (uid) {
+    try {
+      const data = await resetUid(adminKey, uid);
+      lines.push(`✓ Tag ${data.uid} unlinked from its old vault.`);
+    } catch (e) {
+      allOk = false;
+      lines.push(`✗ ${e.message}`);
+    }
+  }
+
+  lines.push('', 'You can now tap the tag and go through activation again.');
+  showResult(lines, allOk);
+  btn.disabled = false;
+  btn.textContent = 'Reset for Demo';
+});
+</script>
+</body>
+</html>
