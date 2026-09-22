@@ -14,10 +14,26 @@
   #result { margin-top: 24px; padding: 14px; background: #f4f4f4; border-radius: 8px; font-size: 14px; display: none; }
   #result a { color: #0056b3; word-break: break-all; }
   .hint { color: #666; font-size: 13px; margin-top: 4px; }
+  .hidden { display: none; }
 </style>
 </head>
 <body>
-  <h1>🎄 Create a Test Capsule</h1>
+  <h1>🎄 Activate Your Vault</h1>
+  <p class="hint">This simulates the flow after tapping the NFC tag or scanning the QR code — enter the activation code from under the scratch-off panel on your product's label to begin.</p>
+
+  <div id="checking-uid" class="hidden">
+    <p class="hint">Checking your product...</p>
+  </div>
+
+  <div id="code-gate">
+    <label for="activationCode">Activation Code</label>
+    <input type="text" id="activationCode" placeholder="12345678" style="text-transform:uppercase;">
+    <p class="hint">Test codes for now: <code>12345678</code> or <code>23456789</code>. These will be replaced with real generated codes before launch.</p>
+    <p class="hint" id="code-error" style="color:#b00020; display:none;"></p>
+    <button onclick="checkCode()">Continue</button>
+  </div>
+
+  <div id="setup-form" class="hidden">
   <p class="hint">This simulates a creator uploading content and setting an unlock date — no NFC tag involved yet, just the URL and the server-side lock.</p>
 
   <label for="lockMessage">Lock Screen Message (optional teaser, shown before unlock)</label>
@@ -44,8 +60,66 @@
   <button onclick="createCapsule()">Create Capsule</button>
 
   <div id="result"></div>
+  </div>
 
 <script>
+let validatedCode = null;
+
+// If this page was reached via an NFC tap, the tag's UID is passed as a URL
+// parameter (e.g. ?uid=04A2B3C4D5). Check whether this specific tag is already
+// linked to a vault - if so, skip straight there instead of showing the code form.
+const tagUid = new URLSearchParams(window.location.search).get('uid');
+
+async function checkUidOnLoad() {
+  if (!tagUid) return; // no uid in the URL - just show the code form as normal (e.g. manual testing)
+
+  document.getElementById('code-gate').classList.add('hidden');
+  document.getElementById('checking-uid').classList.remove('hidden');
+
+  const res = await fetch(`/api/uid/${encodeURIComponent(tagUid)}`);
+  const data = await res.json();
+
+  if (data.linked) {
+    window.location.href = data.viewUrl; // already set up - go straight to the vault
+    return;
+  }
+
+  // Not linked yet - this is a fresh tag, show the normal code-entry form
+  document.getElementById('checking-uid').classList.add('hidden');
+  document.getElementById('code-gate').classList.remove('hidden');
+}
+checkUidOnLoad();
+
+async function checkCode() {
+  const codeInput = document.getElementById('activationCode');
+  const errorEl = document.getElementById('code-error');
+  const code = codeInput.value.trim().toUpperCase();
+  errorEl.style.display = 'none';
+
+  if (!code) {
+    errorEl.textContent = 'Please enter your activation code.';
+    errorEl.style.display = 'block';
+    return;
+  }
+
+  const res = await fetch('/api/codes/validate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ code })
+  });
+  const data = await res.json();
+
+  if (!data.valid) {
+    errorEl.textContent = data.error || 'That code is invalid.';
+    errorEl.style.display = 'block';
+    return;
+  }
+
+  validatedCode = code;
+  document.getElementById('code-gate').classList.add('hidden');
+  document.getElementById('setup-form').classList.remove('hidden');
+}
+
 async function createCapsule() {
   const lockMessage = document.getElementById('lockMessage').value.trim();
   const contributorName = document.getElementById('contributorName').value.trim();
@@ -75,7 +149,7 @@ async function createCapsule() {
   const res = await fetch('/api/capsules', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ lockMessage, contributorName, message, unlockAt, attachments })
+    body: JSON.stringify({ code: validatedCode, uid: tagUid, lockMessage, contributorName, message, unlockAt, attachments })
   });
   const data = await res.json();
 
