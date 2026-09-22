@@ -27,7 +27,6 @@
     <div id="teaser" style="font-size:16px; color:#555; margin-bottom:10px;"></div>
     <div id="countdown">--:--:--:--</div>
     <div id="status">Checking with the server...</div>
-    <p style="margin-top:24px; font-size:14px;"><a id="contribute-link" href="#">Want to add something to this vault?</a></p>
   </div>
 
   <div id="unlocked-view" style="display:none;">
@@ -44,8 +43,6 @@ const capsuleId = params.get('id');
 
 if (!capsuleId) {
   document.body.innerHTML = '<p>No capsule ID provided.</p>';
-} else {
-  document.getElementById('contribute-link').href = `/contribute.html?id=${capsuleId}`;
 }
 
 function formatCountdown(totalSeconds) {
