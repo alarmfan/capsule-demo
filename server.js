@@ -31,14 +31,35 @@ const url = require('url');
 
 const PORT = process.env.PORT || 3000;
 const DB_FILE = path.join(__dirname, 'capsules.json');
+const CODES_FILE = path.join(__dirname, 'codes.json');
+const UIDS_FILE = path.join(__dirname, 'uids.json');
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const UPLOADS_DIR = path.join(__dirname, 'uploads');
 const MAX_UPLOAD_BYTES = 25 * 1024 * 1024; // 25MB per attachment - a demo-safe ceiling, not a production limit
 const MAX_ATTACHMENTS_PER_CONTRIBUTION = 6;
 const MAX_CONTRIBUTIONS = 20; // per capsule, for demo sanity
 const MAX_TOTAL_REQUEST_BYTES = 100 * 1024 * 1024; // overall request ceiling, since several attachments can add up
+const ADMIN_KEY = process.env.ADMIN_KEY || 'dev-only-change-me'; // set a real ADMIN_KEY env var on Render before sharing this
+const MAX_CODE_ATTEMPTS = 8; // failed code guesses allowed per visitor within the window
+const CODE_ATTEMPT_WINDOW_MS = 15 * 60 * 1000; // 15 minutes
 
 if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR);
+
+if (ADMIN_KEY === 'dev-only-change-me') {
+  console.warn('WARNING: ADMIN_KEY is not set - using an insecure default. Set a real ADMIN_KEY environment variable before sharing this deployment.');
+}
+
+// TEMPORARY: seed a couple of easy-to-type numeric codes for testing, since real
+// codes will eventually come from generate-codes.js once you're printing real labels.
+// Delete this block (and the resulting codes.json) once you switch to real codes.
+if (!fs.existsSync(CODES_FILE)) {
+  const seedCodes = {
+    '12345678': { status: 'unclaimed', capsuleId: null, claimedAt: null, createdAt: Date.now() },
+    '23456789': { status: 'unclaimed', capsuleId: null, claimedAt: null, createdAt: Date.now() },
+  };
+  fs.writeFileSync(CODES_FILE, JSON.stringify(seedCodes, null, 2));
+  console.log('Seeded codes.json with test codes: 12345678, 23456789');
+}
 
 // Last line of defense: log and keep running instead of crashing the whole server
 // on an error that somehow escapes the per-request try/catch below.
@@ -60,6 +81,78 @@ function loadDB() {
 }
 function saveDB(db) {
   fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2));
+}
+
+// --- Activation codes: one code per physical unit, printed under a scratch-off panel ---
+function loadCodes() {
+  if (!fs.existsSync(CODES_FILE)) return {};
+  try {
+    return JSON.parse(fs.readFileSync(CODES_FILE, 'utf8'));
+  } catch {
+    return {};
+  }
+}
+function saveCodes(codes) {
+  fs.writeFileSync(CODES_FILE, JSON.stringify(codes, null, 2));
+}
+
+// --- NFC tag UID -> vault linking ---
+// A tag's UID gets linked to a vault the moment that vault is created (via a
+// valid activation code). Every subsequent tap of that same physical tag then
+// goes straight to the vault - no code entry needed again.
+function loadUids() {
+  if (!fs.existsSync(UIDS_FILE)) return {};
+  try {
+    return JSON.parse(fs.readFileSync(UIDS_FILE, 'utf8'));
+  } catch {
+    return {};
+  }
+}
+function saveUids(uids) {
+  fs.writeFileSync(UIDS_FILE, JSON.stringify(uids, null, 2));
+}
+function normalizeUid(uid) {
+  return (uid || '').trim().toUpperCase();
+}
+
+// Excludes visually ambiguous characters (0/O, 1/I/L) since these get hand-typed off a small printed label.
+const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+function generateActivationCode() {
+  let code = '';
+  const bytes = crypto.randomBytes(10);
+  for (let i = 0; i < 10; i++) {
+    code += CODE_ALPHABET[bytes[i] % CODE_ALPHABET.length];
+  }
+  return `${code.slice(0, 5)}-${code.slice(5)}`; // e.g. AB3XY-92KLM
+}
+
+function normalizeCode(code) {
+  return (code || '').trim().toUpperCase();
+}
+
+// Simple in-memory rate limiter for code-guessing attempts. Resets on server restart,
+// which is an acceptable tradeoff for a demo - the goal is blunting scripted guessing,
+// not airtight protection.
+const codeAttempts = new Map(); // key -> { count, windowStart }
+function getClientKey(req) {
+  return (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket.remoteAddress || 'unknown';
+}
+function isRateLimited(key) {
+  const entry = codeAttempts.get(key);
+  if (!entry) return false;
+  if (Date.now() - entry.windowStart > CODE_ATTEMPT_WINDOW_MS) {
+    codeAttempts.delete(key);
+    return false;
+  }
+  return entry.count >= MAX_CODE_ATTEMPTS;
+}
+function recordFailedAttempt(key) {
+  const entry = codeAttempts.get(key);
+  if (!entry || Date.now() - entry.windowStart > CODE_ATTEMPT_WINDOW_MS) {
+    codeAttempts.set(key, { count: 1, windowStart: Date.now() });
+  } else {
+    entry.count++;
+  }
 }
 
 // --- Helpers ---
@@ -203,8 +296,93 @@ async function handleRequest(req, res) {
   const parsed = url.parse(req.url, true);
   const pathname = parsed.pathname;
 
+  // GET /api/uid/:uid -> checks whether this specific physical tag already has
+  // a vault linked to it. This is what lets a tap skip straight to the vault
+  // on every visit after the first, with no code entry.
+  const uidMatch = pathname.match(/^\/api\/uid\/([^/]+)$/);
+  if (req.method === 'GET' && uidMatch) {
+    const uid = normalizeUid(decodeURIComponent(uidMatch[1]));
+    const uids = loadUids();
+    const entry = uids[uid];
+
+    if (!entry) {
+      return sendJSON(res, 200, { linked: false });
+    }
+    return sendJSON(res, 200, { linked: true, viewUrl: `/capsule.html?id=${entry.capsuleId}` });
+  }
+
+  // POST /api/codes/validate -> quick check before showing the rest of the setup form.
+  // Does NOT claim the code - claiming only happens at actual vault creation, so a
+  // code isn't burned just because someone checked it without finishing setup.
+  if (req.method === 'POST' && pathname === '/api/codes/validate') {
+    const clientKey = getClientKey(req);
+    if (isRateLimited(clientKey)) {
+      return sendJSON(res, 429, { valid: false, error: 'Too many attempts. Please wait a while and try again.' });
+    }
+
+    let body;
+    try {
+      body = await readBody(req);
+    } catch (e) {
+      return sendJSON(res, 400, { valid: false, error: 'Invalid request' });
+    }
+
+    const code = normalizeCode(body.code);
+    const codes = loadCodes();
+    const entry = codes[code];
+
+    if (!entry || entry.status !== 'unclaimed') {
+      recordFailedAttempt(clientKey);
+      return sendJSON(res, 200, { valid: false, error: 'That code is invalid or has already been used.' });
+    }
+
+    return sendJSON(res, 200, { valid: true });
+  }
+
+  // POST /api/admin/codes/reset -> frees a code back to unclaimed, for support cases
+  // (a code was used by someone other than the real buyer, a label was damaged, etc).
+  // Protected by a shared key set via the ADMIN_KEY environment variable - not a full
+  // login system, but enough that a stranger can't reset codes at will.
+  if (req.method === 'POST' && pathname === '/api/admin/codes/reset') {
+    const providedKey = req.headers['x-admin-key'];
+    if (!providedKey || providedKey !== ADMIN_KEY) {
+      return sendJSON(res, 401, { error: 'Invalid or missing admin key.' });
+    }
+
+    let body;
+    try {
+      body = await readBody(req);
+    } catch (e) {
+      return sendJSON(res, 400, { error: 'Invalid request body' });
+    }
+
+    const code = normalizeCode(body.code);
+    const codes = loadCodes();
+    const entry = codes[code];
+    if (!entry) {
+      return sendJSON(res, 404, { error: 'No such code.' });
+    }
+
+    const previousCapsuleId = entry.capsuleId || null;
+    entry.status = 'unclaimed';
+    entry.capsuleId = null;
+    entry.claimedAt = null;
+    saveCodes(codes);
+
+    return sendJSON(res, 200, {
+      reset: true,
+      code,
+      previouslyLinkedCapsuleId: previousCapsuleId, // the old vault still exists but is now orphaned from this code
+    });
+  }
+
   // POST /api/capsules -> create a new capsule with its first contribution
   if (req.method === 'POST' && pathname === '/api/capsules') {
+    const clientKey = getClientKey(req);
+    if (isRateLimited(clientKey)) {
+      return sendJSON(res, 429, { error: 'Too many attempts. Please wait a while and try again.' });
+    }
+
     let body;
     try {
       body = await readBody(req);
@@ -216,7 +394,27 @@ async function handleRequest(req, res) {
     }
 
     try {
-      const { lockMessage, unlockAt, contributorName, message, attachments } = body;
+      const { code, uid, lockMessage, unlockAt, contributorName, message, attachments } = body;
+
+      // Re-check the code here too, even though the frontend already called /validate -
+      // never trust that a client-side step actually happened before this request arrived.
+      const normalizedCode = normalizeCode(code);
+      const codes = loadCodes();
+      const codeEntry = codes[normalizedCode];
+      if (!codeEntry || codeEntry.status !== 'unclaimed') {
+        recordFailedAttempt(clientKey);
+        return sendJSON(res, 403, { error: 'That activation code is invalid or has already been used.' });
+      }
+
+      // If a tag UID was passed along, make sure it isn't already linked to a
+      // different vault before we go any further - defense in depth, since the
+      // frontend should already have checked this via GET /api/uid/:uid first.
+      const normalizedUid = uid ? normalizeUid(uid) : null;
+      const uids = loadUids();
+      if (normalizedUid && uids[normalizedUid]) {
+        return sendJSON(res, 409, { error: 'This product is already linked to a vault.' });
+      }
+
       const attachmentList = Array.isArray(attachments) ? attachments : [];
 
       if ((!message && attachmentList.length === 0) || !unlockAt) {
@@ -242,6 +440,7 @@ async function handleRequest(req, res) {
         unlockAt: unlockTimestamp,
         createdAt: Date.now(),
         viewCount: 0,
+        activationCode: normalizedCode, // kept for support/audit trail
         contributions: [
           {
             contributorName: contributorName || null,
@@ -252,6 +451,19 @@ async function handleRequest(req, res) {
         ],
       };
       saveDB(db);
+
+      // Claim the code only now that the capsule was actually created successfully.
+      codeEntry.status = 'claimed';
+      codeEntry.capsuleId = id;
+      codeEntry.claimedAt = Date.now();
+      saveCodes(codes);
+
+      // Link the tag's UID to this vault, if one was provided, so every future
+      // tap of this exact physical tag goes straight to the vault.
+      if (normalizedUid) {
+        uids[normalizedUid] = { capsuleId: id, linkedAt: Date.now() };
+        saveUids(uids);
+      }
 
       return sendJSON(res, 201, {
         id,
