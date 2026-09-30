@@ -49,6 +49,15 @@
 
   <div id="genResult"></div>
 
+  <hr style="margin: 40px 0; border: none; border-top: 1px solid #eee;">
+
+  <h1 style="font-size: 20px;">Demo Codes (Repeating Digits)</h1>
+  <p class="sub">Creates 7 easy-to-remember codes &mdash; 1111111111 through 7777777777 &mdash; and resets them to unclaimed every time you click, so you can reuse the same codes for back-to-back demos.</p>
+
+  <button id="demoSeedBtn">Add / Reset Demo Codes</button>
+
+  <div id="demoResult"></div>
+
 <script>
 const adminKeyInput = document.getElementById('adminKey');
 const codeInput = document.getElementById('code');
@@ -169,6 +178,40 @@ generateBtn.addEventListener('click', async () => {
 
   generateBtn.disabled = false;
   generateBtn.textContent = 'Generate Codes';
+});
+
+const demoSeedBtn = document.getElementById('demoSeedBtn');
+const demoResultEl = document.getElementById('demoResult');
+
+demoSeedBtn.addEventListener('click', async () => {
+  const adminKey = adminKeyInput.value.trim();
+
+  if (!adminKey) {
+    demoResultEl.className = 'err';
+    demoResultEl.textContent = 'Enter the admin key first.';
+    return;
+  }
+
+  demoSeedBtn.disabled = true;
+  demoSeedBtn.textContent = 'Working...';
+
+  try {
+    const res = await fetch('/api/admin/codes/demo-seed', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-admin-key': adminKey },
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || res.status);
+
+    demoResultEl.className = 'ok';
+    demoResultEl.textContent = `Ready to use (unclaimed):\n\n${data.demoCodes.join('\n')}`;
+  } catch (e) {
+    demoResultEl.className = 'err';
+    demoResultEl.textContent = `Failed: ${e.message}`;
+  }
+
+  demoSeedBtn.disabled = false;
+  demoSeedBtn.textContent = 'Add / Reset Demo Codes';
 });
 </script>
 </body>
