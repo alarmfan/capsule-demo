@@ -37,6 +37,18 @@
 
   <div id="result"></div>
 
+  <hr style="margin: 40px 0; border: none; border-top: 1px solid #eee;">
+
+  <h1 style="font-size: 20px;">Generate Test Codes</h1>
+  <p class="sub">Mints new activation codes directly on the live server — usable immediately, no redeploy needed.</p>
+
+  <label for="genCount">How Many</label>
+  <input id="genCount" type="number" min="1" max="50" value="5">
+
+  <button id="generateBtn">Generate Codes</button>
+
+  <div id="genResult"></div>
+
 <script>
 const adminKeyInput = document.getElementById('adminKey');
 const codeInput = document.getElementById('code');
@@ -120,6 +132,43 @@ btn.addEventListener('click', async () => {
   showResult(lines, allOk);
   btn.disabled = false;
   btn.textContent = 'Reset for Demo';
+});
+
+const genCountInput = document.getElementById('genCount');
+const generateBtn = document.getElementById('generateBtn');
+const genResultEl = document.getElementById('genResult');
+
+generateBtn.addEventListener('click', async () => {
+  const adminKey = adminKeyInput.value.trim();
+  const count = parseInt(genCountInput.value, 10) || 5;
+
+  if (!adminKey) {
+    genResultEl.className = 'err';
+    genResultEl.textContent = 'Enter the admin key first.';
+    return;
+  }
+
+  generateBtn.disabled = true;
+  generateBtn.textContent = 'Generating...';
+
+  try {
+    const res = await fetch('/api/admin/codes/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-admin-key': adminKey },
+      body: JSON.stringify({ count }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || res.status);
+
+    genResultEl.className = 'ok';
+    genResultEl.textContent = `Generated ${data.generated.length} new code(s):\n\n${data.generated.join('\n')}\n\nTotal codes now available: ${data.totalCodes}`;
+  } catch (e) {
+    genResultEl.className = 'err';
+    genResultEl.textContent = `Generation failed: ${e.message}`;
+  }
+
+  generateBtn.disabled = false;
+  generateBtn.textContent = 'Generate Codes';
 });
 </script>
 </body>
