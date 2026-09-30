@@ -376,6 +376,45 @@ async function handleRequest(req, res) {
     });
   }
 
+  // POST /api/admin/codes/generate -> mints N new unclaimed activation codes
+  // directly on the live server, for quick testing. Unlike generate-codes.js
+  // (which is meant for real production batches you hand to a label printer),
+  // this is for "I just need a few working PINs right now" - no redeploy,
+  // no file upload, codes are usable immediately. Same protection as the
+  // other admin endpoints.
+  if (req.method === 'POST' && pathname === '/api/admin/codes/generate') {
+    const providedKey = req.headers['x-admin-key'];
+    if (!providedKey || providedKey !== ADMIN_KEY) {
+      return sendJSON(res, 401, { error: 'Invalid or missing admin key.' });
+    }
+
+    let body;
+    try {
+      body = await readBody(req);
+    } catch (e) {
+      return sendJSON(res, 400, { error: 'Invalid request body' });
+    }
+
+    let count = parseInt(body.count, 10);
+    if (!Number.isFinite(count) || count < 1) count = 5;
+    if (count > 50) count = 50; // sane ceiling for a manual testing request
+
+    const codes = loadCodes();
+    const newCodes = [];
+    for (let i = 0; i < count; i++) {
+      let code;
+      do {
+        code = generateActivationCode();
+      } while (codes[code]); // guard against the astronomically unlikely collision
+
+      codes[code] = { status: 'unclaimed', capsuleId: null, claimedAt: null, createdAt: Date.now() };
+      newCodes.push(code);
+    }
+    saveCodes(codes);
+
+    return sendJSON(res, 201, { generated: newCodes, totalCodes: Object.keys(codes).length });
+  }
+
   // POST /api/admin/uids/reset -> unlinks a tag's UID from whatever vault it
   // currently points to, so the same physical tag can be tapped again during a
   // demo without jumping straight to the old vault. Does NOT delete the old
