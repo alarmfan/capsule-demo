@@ -415,6 +415,31 @@ async function handleRequest(req, res) {
     return sendJSON(res, 201, { generated: newCodes, totalCodes: Object.keys(codes).length });
   }
 
+  // POST /api/admin/codes/demo-seed -> creates (or resets) a fixed set of
+  // easy-to-remember demo codes: repeating-digit codes like 1111111111,
+  // 2222222222, etc. These are ALWAYS forced back to unclaimed on every call,
+  // so this doubles as both "make sure they exist" and "reset them for reuse"
+  // in one click - handy for back-to-back demos. Deliberately kept separate
+  // from the general /generate endpoint so repeating-digit codes never
+  // accidentally end up in the real/random code pool.
+  if (req.method === 'POST' && pathname === '/api/admin/codes/demo-seed') {
+    const providedKey = req.headers['x-admin-key'];
+    if (!providedKey || providedKey !== ADMIN_KEY) {
+      return sendJSON(res, 401, { error: 'Invalid or missing admin key.' });
+    }
+
+    const codes = loadCodes();
+    const demoCodes = [];
+    for (let digit = 1; digit <= 7; digit++) {
+      const code = String(digit).repeat(10); // 1111111111, 2222222222, ...
+      codes[code] = { status: 'unclaimed', capsuleId: null, claimedAt: null, createdAt: Date.now(), demo: true };
+      demoCodes.push(code);
+    }
+    saveCodes(codes);
+
+    return sendJSON(res, 200, { demoCodes, totalCodes: Object.keys(codes).length });
+  }
+
   // POST /api/admin/uids/reset -> unlinks a tag's UID from whatever vault it
   // currently points to, so the same physical tag can be tapped again during a
   // demo without jumping straight to the old vault. Does NOT delete the old
